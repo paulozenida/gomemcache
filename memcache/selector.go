@@ -24,15 +24,28 @@ import (
 	"sync"
 )
 
+// keyBufPool returns []byte buffers for use by PickServer's call to
+// crc32.ChecksumIEEE to avoid allocations. (but doesn't avoid the
+// copies, which at least are bounded in size and small)
+var keyBufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 256)
+		return &b
+	},
+}
+
 // ServerSelector is the interface that selects a memcache server
 // as a function of the item's key.
 //
 // All ServerSelector implementations must be safe for concurrent use
 // by multiple goroutines.
 type ServerSelector interface {
+
 	// PickServer returns the server address that a given item
 	// should be shared onto.
 	PickServer(ctx context.Context, key string) (net.Addr, error)
+
+	// Each .
 	Each(ctx context.Context, fn func(context.Context, net.Addr) error) error
 }
 
@@ -95,24 +108,25 @@ func (ss *ServerList) Each(ctx context.Context, fn func(context.Context, net.Add
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
 	for _, a := range ss.addrs {
-		if err := fn(ctx, a); nil != err {
+		if err := AroundEach(ctx, a, fn); nil != err {
 			return err
 		}
 	}
 	return nil
 }
 
-// keyBufPool returns []byte buffers for use by PickServer's call to
-// crc32.ChecksumIEEE to avoid allocations. (but doesn't avoid the
-// copies, which at least are bounded in size and small)
-var keyBufPool = sync.Pool{
-	New: func() interface{} {
-		b := make([]byte, 256)
-		return &b
-	},
+func (ss *ServerList) PickServer(ctx context.Context, key string) (net.Addr, error) {
+	addr, err := ss.pickServer(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+
+	OnServerPicked(ctx, addr)
+
+	return addr, err
 }
 
-func (ss *ServerList) PickServer(_ context.Context, key string) (net.Addr, error) {
+func (ss *ServerList) pickServer(_ context.Context, key string) (net.Addr, error) {
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
 	if len(ss.addrs) == 0 {
